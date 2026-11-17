@@ -9,6 +9,8 @@ Usage:
     python bartender.py --list-stations           # Print known stations
 """
 
+from __future__ import annotations
+
 import argparse
 import csv
 import curses
