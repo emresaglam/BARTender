@@ -505,6 +505,7 @@ def draw_ui(
     error_msg: str | None,
     alerts: list[str],
     emoji: bool = False,
+    selected: int = 0,
 ):
     """Render the full curses UI."""
     stdscr.erase()
@@ -534,19 +535,21 @@ def draw_ui(
         row += 2
 
     # -- Station sections --
-    for sid in station_ids:
+    for idx, sid in enumerate(station_ids):
         if row >= height - 2:
             break
 
         name = gtfs.station_names.get(sid, sid)
+        is_selected = idx == selected
         if emoji:
             section_title = f" \U0001f689 {name} ({sid}) "
         else:
             section_title = f" {name} ({sid}) "
-        _safe_addstr(
-            stdscr, row, 1, section_title,
-            curses.color_pair(PAIR_SECTION) | curses.A_BOLD,
-        )
+        attr = curses.color_pair(PAIR_SECTION) | curses.A_BOLD
+        if is_selected:
+            attr |= curses.A_REVERSE
+        _safe_addstr(stdscr, row, 0, "\u25b6" if is_selected else " ", attr & ~curses.A_REVERSE)
+        _safe_addstr(stdscr, row, 1, section_title, attr)
         row += 1
 
         arrivals = arrivals_by_station.get(sid, [])
@@ -649,9 +652,9 @@ def draw_ui(
 
     # -- Footer bar --
     if emoji:
-        footer = " \U0001f6aa q: quit  \U0001f504 r: refresh  \U0001f50d s: station code  \U0001f4cb l: station list "
+        footer = " \U0001f6aa q: quit  \U0001f504 r: refresh  \u21b9 tab: select  \U0001f50d s: replace by code  \U0001f4cb l: replace from list "
     else:
-        footer = " q: quit  r: refresh  s: station code  l: station list "
+        footer = " q: quit  r: refresh  tab: select  s: replace by code  l: replace from list "
     footer = footer.ljust(width)
     _safe_addstr(
         stdscr, height - 1, 0, footer,
@@ -809,6 +812,20 @@ def _station_picker(stdscr, gtfs: GtfsStaticData, emoji: bool = False) -> str | 
             pass
 
 
+def _replace_station(station_ids: list[str], selected: int, code: str) -> int:
+    """Replace the selected station with *code*; return the new selected index.
+
+    If *code* is already shown, just move the selection to it.
+    """
+    if code in station_ids:
+        return station_ids.index(code)
+    if not station_ids:
+        station_ids.append(code)
+        return 0
+    station_ids[selected] = code
+    return selected
+
+
 def curses_main(stdscr, station_ids: list[str], gtfs: GtfsStaticData, emoji: bool = False):
     """Main curses event loop."""
     _init_colors()
@@ -819,6 +836,7 @@ def curses_main(stdscr, station_ids: list[str], gtfs: GtfsStaticData, emoji: boo
     alerts: list[str] = []
     error_msg: str | None = None
     last_fetch = 0.0
+    selected = 0  # index of the station that s/l will replace
 
     while True:
         now = time.time()
@@ -838,31 +856,29 @@ def curses_main(stdscr, station_ids: list[str], gtfs: GtfsStaticData, emoji: boo
             last_fetch = time.time()
 
         countdown = max(0, REFRESH_INTERVAL - int(time.time() - last_fetch))
-        draw_ui(stdscr, station_ids, arrivals_by_station, gtfs, countdown, error_msg, alerts, emoji)
+        draw_ui(stdscr, station_ids, arrivals_by_station, gtfs, countdown, error_msg, alerts, emoji, selected)
 
         key = stdscr.getch()
         if key == ord("q"):
             break
         elif key == ord("r"):
             last_fetch = 0  # force refresh next iteration
+        elif key == 9 and station_ids:  # Tab: cycle selected station
+            selected = (selected + 1) % len(station_ids)
+        elif key == curses.KEY_BTAB and station_ids:  # Shift+Tab: cycle backwards
+            selected = (selected - 1) % len(station_ids)
         elif key == ord("s"):
             height, width = stdscr.getmaxyx()
             code = _prompt_station(stdscr, height, width)
             if code and code in gtfs.station_names:
-                if code not in station_ids:
-                    station_ids.append(code)
-                    if len(station_ids) > 2:
-                        station_ids.pop(0)
+                selected = _replace_station(station_ids, selected, code)
                 last_fetch = 0
             elif code:
                 error_msg = f"Unknown station: {code}"
         elif key == ord("l"):
             code = _station_picker(stdscr, gtfs, emoji)
             if code:
-                if code not in station_ids:
-                    station_ids.append(code)
-                    if len(station_ids) > 2:
-                        station_ids.pop(0)
+                selected = _replace_station(station_ids, selected, code)
                 last_fetch = 0
         elif key == curses.KEY_RESIZE:
             pass  # redraw on next loop
